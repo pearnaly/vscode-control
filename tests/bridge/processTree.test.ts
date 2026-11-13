@@ -60,6 +60,14 @@ describe('readProcessTable (real system)', () => {
     expect(processes.get(process.pid)?.parent).toBe(process.ppid);
   }, 30_000);
 
+  // `ps` is started by absolute path (/bin/ps or /usr/bin/ps) from `/`, so a planted `ps` in the session's
+  // folder cannot run; not reachable on Windows, which uses the PowerShell branch.
+  it.runIf(process.platform !== 'win32')('reads the process table with ps and knows this process and its parent', async () => {
+    const processes = await readProcessTable();
+    expect(processes.get(process.pid)?.parent).toBe(process.ppid);
+    expect(processes.has(process.ppid)).toBe(true);
+  }, 30_000);
+
   // A bare `powershell.exe` is looked up in the current directory first, unless the machine sets
   // NoDefaultCurrentDirectoryInExePath; this plants a stand-in there and removes that guard.
   it.runIf(process.platform === 'win32')('does not run a powershell.exe planted in the current directory', async () => {

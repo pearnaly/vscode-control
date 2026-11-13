@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
 
@@ -65,7 +66,16 @@ export async function readProcessTable(): Promise<ProcessTable> {
     });
     return parseProcessTable(stdout);
   }
-  const { stdout } = await run('ps', ['-A', '-o', 'pid=,ppid='], { timeout: 15_000 });
+  // Absolute path and working directory `/` on purpose, as for PowerShell above: a bare `ps` is resolved
+  // through PATH, and a relative or empty PATH entry resolves against the working directory, which here is
+  // the session's folder and may be an untrusted repository holding a planted `ps`.
+  const ps = ['/bin/ps', '/usr/bin/ps'].find((candidate) => existsSync(candidate));
+  if (ps === undefined) throw new Error('ps not found in /bin or /usr/bin');
+  const { stdout } = await run(ps, ['-A', '-o', 'pid=,ppid='], {
+    cwd: '/',
+    timeout: 15_000,
+    maxBuffer: 8 * 1024 * 1024,
+  });
   return parseProcessTable(stdout);
 }
 

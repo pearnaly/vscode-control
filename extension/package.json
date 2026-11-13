@@ -2,7 +2,7 @@
   "name": "vscode-control",
   "displayName": "vscode-control",
   "description": "Lets Claude Code open files and reveal them in the Explorer of this window, through a local MCP bridge.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "pearnaly",
   "license": "MIT",
   "repository": {

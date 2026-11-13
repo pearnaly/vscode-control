@@ -20,8 +20,9 @@ Both are built from this repository.
 ## Platform status
 
 Developed and tested on Windows 11. macOS and Linux should work (there the bridge reads the process table with `ps`
-instead of PowerShell) but have not been tested. `ps` reports no creation times, so the creation-time check in the
-ancestor walk (see Security) does not apply there.
+instead of PowerShell) but have not been tested. The bridge starts `ps` by absolute path (`/bin/ps` or `/usr/bin/ps`),
+from `/` as the working directory, and fails if neither exists. `ps` reports no creation times, so the creation-time
+check in the ancestor walk (see Security) does not apply there.
 
 "Beside the chat" finds the chat through the Claude Code chat tab's internal view type, `claudeVSCodePanel`. That
 name is not a public interface and may change; if it does, `open_file` falls back to VS Code's own "beside".
@@ -125,9 +126,16 @@ encode a usage policy:
   arguments. The extension executes no command line and starts no process; the only VS Code commands it invokes are
   `revealInExplorer` and `workbench.action.focusActiveEditorGroup`.
 - **`open_file` accepts any absolute path, on purpose.** The secret-entry flow needs files outside the workspace,
-  and the only caller is your own Claude session, which can read those files anyway. The tool returns a one-line
-  status (what was opened, where, in which window), never file content. `reveal_in_explorer` is limited to the
-  window's workspace folders.
+  and the only caller is your own Claude session, which can normally read those files anyway. The tool returns a
+  one-line status (what was opened, where, in which window), never file content. `reveal_in_explorer` is limited to
+  the window's workspace folders. Caveat: if you rely on Claude Code permission rules (for example a `Read` deny for
+  `~/.ssh`) to keep files away from Claude, `open_file` can still open such a file and select text in it, and Claude
+  Code's VS Code integration shares the editor's selected text with Claude. So treat `open_file` as able to read any
+  file the VS Code user can read, or do not register it in setups that depend on such rules.
+- **Network paths only inside the workspace.** Network (UNC) paths such as `\\server\share\file` are only opened or
+  revealed inside the window's workspace folders. Anywhere else the call is refused before any file-system access,
+  because Windows would connect to that host and send your credentials. VS Code's own `security.allowedUNCHosts`
+  restriction applies as well.
 - **PowerShell by absolute path.** On Windows the bridge reads the process table with
   `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` and starts it with its own directory as the working
   directory, so nothing planted in the session's folder, which may be an untrusted repository, is executed or loaded.
