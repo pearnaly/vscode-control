@@ -50,7 +50,23 @@ export async function readWindows(dir: string, alive: (pid: number) => boolean =
   return windows;
 }
 
-/** Deletes a window's discovery file; used when its server refuses connections (the window is gone). */
-export async function forgetWindow(dir: string, pid: number): Promise<void> {
-  await fs.rm(path.join(dir, `${pid}.json`), { force: true }).catch(() => undefined);
+/**
+ * Deletes a window's discovery file; used when its server refuses connections (the window is gone).
+ * With `token`, the file is deleted only if it still holds that token: a new extension host may have reused
+ * the pid and written its own file in the meantime, and that live file must stay. A missing, unparsable or
+ * differently-tokened file is left alone. (Read and delete are not atomic: a new window writing its file
+ * in the instant between them would still lose it until its next publish, a far narrower window than
+ * deleting by pid alone.)
+ */
+export async function forgetWindow(dir: string, pid: number, token?: string): Promise<void> {
+  const file = path.join(dir, `${pid}.json`);
+  if (token !== undefined) {
+    try {
+      const stored = (JSON.parse(await fs.readFile(file, 'utf8')) as { token?: unknown } | null)?.token;
+      if (stored !== token) return;
+    } catch {
+      return;
+    }
+  }
+  await fs.rm(file, { force: true }).catch(() => undefined);
 }

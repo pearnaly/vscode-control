@@ -36,7 +36,8 @@ describe('openFileArgs', () => {
     expect(openFileArgs.safeParse({ path: file, group }).success).toBe(true);
   });
 
-  it.each([0, 10, 'left', 1.5])('rejects group %s with a readable message', (group) => {
+  // 1e21 and 2**53 fail both the safe-integer check and max(9); the message must still appear exactly once.
+  it.each([0, 10, 'left', 1.5, 1e21, 2 ** 53])('rejects group %s with one readable message', (group) => {
     expect(errorText({ path: file, group })).toBe('group: must be "beside", "active" or an integer 1-9');
   });
 
@@ -101,7 +102,7 @@ describe('openFileObject', () => {
   it('rejects unknown keys instead of stripping them', () => {
     const r = openFileObject.safeParse({ path: file, lines: 3 });
     expect(r.success).toBe(false);
-    if (!r.success) expect(formatZodError(r.error)).toBe("arguments: Unrecognized key(s) in object: 'lines'");
+    if (!r.success) expect(formatZodError(r.error)).toBe('arguments: Unrecognized key: "lines"');
   });
 
   it('accepts a valid call', () => {
@@ -174,6 +175,16 @@ describe('windowRecordSchema', () => {
     expect(windowRecordSchema.safeParse({ ...record, port: 0 }).success).toBe(false);
   });
 
+  it('accepts an optional positive startedAt', () => {
+    expect(windowRecordSchema.safeParse({ ...record, startedAt: 1794528000000 }).success).toBe(true);
+    expect(windowRecordSchema.safeParse(record).success).toBe(true);
+    expect(windowRecordSchema.safeParse({ ...record, startedAt: 0 }).success).toBe(false);
+  });
+
+  it('rejects a non-integer startedAt', () => {
+    expect(windowRecordSchema.safeParse({ ...record, startedAt: 1.5 }).success).toBe(false);
+  });
+
   it('accepts a window without folders', () => {
     expect(windowRecordSchema.safeParse({ ...record, workspaceFolders: [] }).success).toBe(true);
   });
@@ -190,11 +201,11 @@ describe('windowRecordSchema', () => {
 describe('formatZodError', () => {
   it('joins several issues with "; "', () => {
     expect(errorText({ path: file, line: 0, group: 'left' })).toBe(
-      'line: Number must be greater than or equal to 1; group: must be "beside", "active" or an integer 1-9',
+      'line: Too small: expected number to be >=1; group: must be "beside", "active" or an integer 1-9',
     );
   });
 
   it('prefixes a root-level issue with "arguments: "', () => {
-    expect(errorText({ path: file, lines: 3 })).toBe("arguments: Unrecognized key(s) in object: 'lines'");
+    expect(errorText({ path: file, lines: 3 })).toBe('arguments: Unrecognized key: "lines"');
   });
 });

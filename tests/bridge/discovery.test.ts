@@ -80,6 +80,40 @@ describe('forgetWindow', () => {
     await forgetWindow(dir, 101);
     expect(fs.existsSync(path.join(dir, '101.json'))).toBe(false);
   });
+
+  describe('with a token', () => {
+    const token = 't'.repeat(64);
+
+    it('deletes the file when its token matches', async () => {
+      put('101.json', JSON.stringify(record(101)));
+      await forgetWindow(dir, 101, token);
+      expect(fs.existsSync(path.join(dir, '101.json'))).toBe(false);
+    });
+
+    it('keeps the file when its token differs (a new window reused the pid and wrote its own file)', async () => {
+      put('101.json', JSON.stringify({ ...record(101), token: 'n'.repeat(64) }));
+      await forgetWindow(dir, 101, token);
+      expect(fs.existsSync(path.join(dir, '101.json'))).toBe(true);
+    });
+
+    it('tolerates a missing file', async () => {
+      await expect(forgetWindow(dir, 101, token)).resolves.toBeUndefined();
+      expect(fs.existsSync(path.join(dir, '101.json'))).toBe(false);
+    });
+
+    it.each(['not json', '', 'null', '5', '{}', '{"token":5}'])('keeps a file it cannot match: %j', async (content) => {
+      put('101.json', content);
+      await forgetWindow(dir, 101, token);
+      expect(fs.readFileSync(path.join(dir, '101.json'), 'utf8')).toBe(content);
+    });
+
+    it('leaves other windows alone', async () => {
+      put('101.json', JSON.stringify(record(101)));
+      put('102.json', JSON.stringify(record(102)));
+      await forgetWindow(dir, 101, token);
+      expect(fs.existsSync(path.join(dir, '102.json'))).toBe(true);
+    });
+  });
 });
 
 describe('isAlive', () => {

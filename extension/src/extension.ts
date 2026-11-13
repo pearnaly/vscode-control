@@ -4,11 +4,19 @@ import { windowsDir } from '../../shared/paths';
 import { dispatch } from './dispatch';
 import { Registry } from './registry';
 import { startServer } from './server';
+import { chooseStartedAt } from './startedAt';
 import { windowName, workspaceFolderPaths } from './windowInfo';
 
 let cleanup: (() => Promise<void>) | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  // The wall clock when this extension host process started (Node's time origin), not when the extension
+  // activated: the bridge compares it with the OS creation time of the pid (Windows), so a file left behind
+  // by a crash cannot pass for this window once its pid has been reused by a later process. Written only
+  // when it is plausible (see chooseStartedAt); without it the file behaves like one from 0.1.x.
+  const origin = Math.round(performance.timeOrigin);
+  const estimate = Date.now() - process.uptime() * 1000;
+  const startedAt = chooseStartedAt(origin, estimate, Date.now());
   const log = vscode.window.createOutputChannel('vscode-control');
   context.subscriptions.push(log);
 
@@ -50,6 +58,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         workspaceFolders: workspaceFolderPaths(),
         windowName: windowName(),
         lastFocusedAt,
+        startedAt,
       });
       return true;
     } catch (e) {
@@ -80,7 +89,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   log.appendLine(
     `vscode-control ${context.extension.packageJSON.version}: listening on 127.0.0.1:${server.port}; ` +
-      (registered ? `registered ${registry.file}` : 'registration failed'),
+      (registered ? `registered ${registry.file}` : 'registration failed') +
+      `; startedAt ${startedAt ?? 'none'}`,
   );
 }
 

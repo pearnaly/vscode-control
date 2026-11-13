@@ -1,6 +1,6 @@
 {
   "name": "vscode-control",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "description": "Lets Claude Code open files and reveal them in the Explorer of the VS Code window it runs in",
   "author": "Paul-Émile Arnaly <pearnaly@gmail.com>",
@@ -27,7 +27,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
-    "zod": "^3.25.76"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^22.12.0",

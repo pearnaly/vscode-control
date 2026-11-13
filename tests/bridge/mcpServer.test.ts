@@ -16,7 +16,16 @@ async function connect(): Promise<{ client: Client; calls: CallRequest[] }> {
     readWindows: async () => [
       { pid: 7, port: 1007, token: 't'.repeat(64), workspaceFolders: [], windowName: 'w7', lastFocusedAt: 0 },
     ],
-    ancestors: async () => [7],
+    snapshot: async () => ({
+      table: new Map([
+        [1, { parent: 7, created: 0 }],
+        [7, { parent: 0, created: 0 }],
+      ]),
+      takenAt: Date.now(),
+      timed: true,
+    }),
+    selfPid: 1,
+    log: () => undefined,
     cwd: os.tmpdir(),
     callWindow: async (_win, req) => {
       calls.push(req);

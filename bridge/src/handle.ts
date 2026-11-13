@@ -8,17 +8,27 @@ import {
   type WindowRecord,
 } from '../../shared/protocol';
 import type { WindowAnswer } from './forward';
+import { ancestorsOf, type ProcessSnapshot } from './processTree';
 import { resolveWindow, type Resolved, type Via } from './resolveWindow';
+import { staleReason } from './staleness';
 
 export const NO_WINDOW = 'No VS Code window with vscode-control is running (extension installed? window reloaded?)';
 
 export interface HandleDeps {
   readWindows: () => Promise<WindowRecord[]>;
-  ancestors: () => Promise<number[]>;
+  /** The session's process snapshot (read once, cached). A rejection means: no stale check, no ancestry match. */
+  snapshot: () => Promise<ProcessSnapshot>;
+  /** This process's pid: where the ancestry walk starts. */
+  selfPid: number;
   cwd: string;
   callWindow: (win: WindowRecord, req: CallRequest) => Promise<WindowAnswer>;
-  /** Deletes the discovery file of a window that refused the connection. */
+  /**
+   * Deletes the discovery file of a window whose pid was reused or that refused the connection. A rejection is
+   * ignored: a file that cannot be deleted must not abort the tool call.
+   */
   forgetWindow: (win: WindowRecord) => Promise<void>;
+  /** One diagnostic line (stderr in production). */
+  log: (line: string) => void;
 }
 
 const VIA_NOTE: Record<Via, string> = {
@@ -36,12 +46,6 @@ export async function handleTool(tool: ToolName, rawArgs: unknown, deps: HandleD
   const parsed = tool === 'open_file' ? openFileArgs.safeParse(rawArgs) : revealArgs.safeParse(rawArgs);
   if (!parsed.success) return result(`Invalid arguments: ${formatZodError(parsed.error)}`, true);
 
-  const call = async (windows: WindowRecord[]): Promise<{ target: Resolved; res: WindowAnswer } | undefined> => {
-    const target = await resolveWindow(windows, deps.ancestors, deps.cwd);
-    if (target === undefined) return undefined;
-    return { target, res: await deps.callWindow(target.window, { tool, args: parsed.data }) };
-  };
-
   let windows: WindowRecord[];
   try {
     windows = await deps.readWindows();
@@ -49,6 +53,47 @@ export async function handleTool(tool: ToolName, rawArgs: unknown, deps: HandleD
     const reason = e instanceof Error ? e.message : String(e);
     return result(`Cannot read the vscode-control discovery directory: ${reason}`, true);
   }
+  // Nothing to choose from: answer now, without waiting for (or spending a retry on) the process snapshot.
+  if (windows.length === 0) return result(NO_WINDOW, true);
+
+  let snapshot: ProcessSnapshot | undefined;
+  try {
+    snapshot = await deps.snapshot();
+  } catch {
+    snapshot = undefined; // already logged where it is read; folder and focus fallbacks still apply
+  }
+
+  if (snapshot !== undefined) {
+    // A file that cannot belong to a live window is never contacted, whatever would have picked it. A reused
+    // pid proves the file stale for good, so it is deleted; a pid that was not running when the snapshot was
+    // taken rests on the window's own clock claim, so that file is only left out of this call.
+    const current = snapshot;
+    const ignored = new Set<WindowRecord>();
+    for (const w of windows) {
+      const reason = staleReason(w, current);
+      if (reason === 'reused') {
+        await deps.forgetWindow(w).catch(() => undefined);
+        deps.log(`vscode-control: ignored stale discovery file ${w.pid}.json (its pid now belongs to a newer process)`);
+        ignored.add(w);
+      } else if (reason === 'gone') {
+        deps.log(
+          `vscode-control: ignored discovery file ${w.pid}.json (its process was not running when this session started; not deleted)`,
+        );
+        ignored.add(w);
+      }
+    }
+    windows = windows.filter((w) => !ignored.has(w));
+  }
+
+  const ancestors = async (): Promise<number[]> =>
+    snapshot === undefined ? [] : ancestorsOf(deps.selfPid, snapshot.table);
+
+  const call = async (candidates: WindowRecord[]): Promise<{ target: Resolved; res: WindowAnswer } | undefined> => {
+    const target = await resolveWindow(candidates, ancestors, deps.cwd);
+    if (target === undefined) return undefined;
+    return { target, res: await deps.callWindow(target.window, { tool, args: parsed.data }) };
+  };
+
   let outcome = await call(windows);
   if (outcome?.res.unreachable && !outcome.res.ok) {
     const { window: refusing, via } = outcome.target;
@@ -62,9 +107,9 @@ export async function handleTool(tool: ToolName, rawArgs: unknown, deps: HandleD
         true,
       );
     }
-    // A window picked by fallback that refuses connections is most likely stale: its discovery file outlived a
-    // crash and its pid was reused. Forget it and try once more with the remaining windows.
-    await deps.forgetWindow(refusing);
+    // A window picked by fallback that refuses connections is most likely stale (e.g. a 0.1.x file, or no
+    // creation times on this system): forget it and try once more with the remaining windows.
+    await deps.forgetWindow(refusing).catch(() => undefined);
     outcome = await call(windows.filter((w) => w.pid !== refusing.pid));
     if (outcome === undefined) {
       return result(`${NO_WINDOW} (window "${refusing.windowName}" refused the connection and was forgotten)`, true);

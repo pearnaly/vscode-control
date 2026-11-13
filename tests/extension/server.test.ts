@@ -59,6 +59,19 @@ describe('startServer', () => {
     expect(seen).toEqual([{ tool: 'open_file', args: { path: 'x' } }]);
   });
 
+  it('hands a call without args to the handler (args is optional) and returns its answer', async () => {
+    const seen: CallRequest[] = [];
+    server = await startServer(TOKEN, async (req) => {
+      seen.push(req);
+      return { ok: true, text: 'done' };
+    });
+    const r = await send(server.port, { body: JSON.stringify({ tool: 'open_file' }) });
+    expect(r).toEqual({ status: 200, body: { ok: true, text: 'done' } });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.tool).toBe('open_file');
+    expect(seen[0]?.args).toBeUndefined();
+  });
+
   it('returns 401 without the token and never calls the handler', async () => {
     let called = false;
     server = await startServer(TOKEN, async () => {

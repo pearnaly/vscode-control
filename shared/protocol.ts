@@ -1,5 +1,7 @@
 import * as path from 'node:path';
-import { z } from 'zod';
+// A namespace import, not `{ z }`: esbuild cannot tree-shake zod 4's `z` re-export, so `{ z }` bundles all 40+
+// locales (about +540 kb in each bundle). The namespace import has the same members as the named `z`.
+import * as z from 'zod';
 
 export const TOOL_NAMES = ['open_file', 'reveal_in_explorer'] as const;
 export type ToolName = (typeof TOOL_NAMES)[number];
@@ -21,11 +23,17 @@ const ABSOLUTE_PATH_MESSAGE =
     ? 'must be an absolute Windows path like C:\\dir\\file (not /c/dir/file)'
     : 'must be an absolute path';
 
-const absolutePath = z.string().refine(isAbsolutePath, { message: ABSOLUTE_PATH_MESSAGE });
+const absolutePath = z.string().refine(isAbsolutePath, { error: ABSOLUTE_PATH_MESSAGE });
 
-// A zod 3 union reports the issues of a branch that failed only a check (0, 10, 1.5) instead of its
-// own invalid_union issue, so the message has to be on the number branch as well as on the union.
-const groupError = { errorMap: () => ({ message: 'must be "beside", "active" or an integer 1-9' }) };
+const GROUP_MESSAGE = 'must be "beside", "active" or an integer 1-9';
+// The message sits on the union and on every check of the number branch, so whichever issue zod reports
+// for a bad group ('left', 0, 10, 1.5), it reads the same. `abort` on the integer check stops 1e21 and 2**53,
+// which fail the safe-integer check and max(9) alike, from reporting the message twice.
+const groupNumber = z
+  .number({ error: GROUP_MESSAGE })
+  .int({ error: GROUP_MESSAGE, abort: true })
+  .min(1, { error: GROUP_MESSAGE })
+  .max(9, { error: GROUP_MESSAGE });
 
 /** Raw shape for open_file; the MCP SDK turns it into the tool's JSON schema. */
 export const openFileShape = {
@@ -43,7 +51,7 @@ export const openFileShape = {
     .number().int().min(1).optional()
     .describe('1-based column of the last selected character, inclusive, in UTF-16 code units (default: end of endLine). Requires endLine (use endLine = line for one line).'),
   group: z
-    .union([z.literal('beside'), z.literal('active'), z.number(groupError).int().min(1).max(9)], groupError)
+    .union([z.literal('beside'), z.literal('active'), groupNumber], { error: GROUP_MESSAGE })
     .optional()
     .describe('"beside" (default): the editor group next to the Claude chat. "active": the active group. 1-9: that group.'),
   focus: z
@@ -62,8 +70,7 @@ export const openFileObject = z.object(openFileShape).strict();
 
 /** `openFileObject` plus the cross-field rules; the bridge and the extension validate with this. */
 export const openFileArgs = openFileObject.superRefine((a, ctx) => {
-  const fail = (field: string, message: string): void =>
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message });
+  const fail = (field: string, message: string): void => ctx.addIssue({ code: 'custom', path: [field], message });
 
   // Independent of the endLine chain below, so none of these hides another.
   if (a.column !== undefined && a.line === undefined) fail('column', 'column requires line');
@@ -98,7 +105,7 @@ export type RevealArgs = z.infer<typeof revealArgs>;
 /** Body of POST /call (bridge → extension). Args are validated again by the extension. */
 export const callRequestSchema = z.object({
   tool: z.enum(TOOL_NAMES),
-  args: z.unknown(),
+  args: z.unknown().optional(), // zod 4 no longer makes a z.unknown() key optional by itself
 });
 export type CallRequest = z.infer<typeof callRequestSchema>;
 
@@ -109,20 +116,22 @@ export const callResponseSchema = z.discriminatedUnion('ok', [
 ]);
 export type CallResponse = z.infer<typeof callResponseSchema>;
 
-/** Content of ~/.vscode-control/windows/<pid>.json. */
+/** Content of ~/.vscode-control/windows/<pid>.json. zod 4 numbers reject ±Infinity and NaN by default. */
 export const windowRecordSchema = z.object({
   pid: z.number().int().positive(),
   port: z.number().int().min(1).max(65535),
   token: z.string().min(32),
   workspaceFolders: z.array(absolutePath),
   windowName: z.string(),
-  lastFocusedAt: z.number().finite(),
+  lastFocusedAt: z.number(),
+  /** Epoch ms when the window's extension host started; absent in files written by 0.1.x. */
+  startedAt: z.number().int().positive().optional(),
 });
 export type WindowRecord = z.infer<typeof windowRecordSchema>;
 
 /** "field: message; other: message" — short enough for a tool result. Root-level issues read "arguments: …". */
 export function formatZodError(error: z.ZodError): string {
   return error.issues
-    .map((issue) => `${issue.path.length > 0 ? issue.path.join('.') : 'arguments'}: ${issue.message}`)
+    .map((issue) => `${issue.path.length > 0 ? issue.path.map(String).join('.') : 'arguments'}: ${issue.message}`)
     .join('; ');
 }

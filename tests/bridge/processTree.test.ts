@@ -2,22 +2,58 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { ancestorsOf, parseProcessTable, readProcessTable, type ProcessTable } from '../../bridge/src/processTree';
+import {
+  ancestorsOf,
+  filetimeToMs,
+  isTimedTable,
+  parseProcessTable,
+  readProcessTable,
+  type ProcessSnapshot,
+  type ProcessTable,
+} from '../../bridge/src/processTree';
 
 /** Builds a table from [pid, parent, created?] rows; `created` defaults to 0 (unknown). */
 const table = (rows: [number, number, number?][]): ProcessTable =>
   new Map(rows.map(([pid, parent, created = 0]) => [pid, { parent, created }]));
 
 describe('parseProcessTable', () => {
-  it('reads "pid ppid" and "pid ppid created" lines and skips everything else', () => {
+  it('reads "pid ppid" and "pid ppid raw" lines, converting the third column, and skips everything else', () => {
     const parsed = parseProcessTable(
-      '  4 0\r\n76940 40408 134076000000000000\r\n\r\nwarning: x\n52068 76940\n1 2 x\n',
+      '  4 0\r\n76940 40408 7\r\n\r\nwarning: x\n52068 76940\n',
+      (raw) => raw * 1000,
     );
     expect([...parsed]).toEqual([
       [4, { parent: 0, created: 0 }],
-      [76940, { parent: 40408, created: 134076000000000000 }],
+      [76940, { parent: 40408, created: 7000 }],
       [52068, { parent: 76940, created: 0 }],
     ]);
+  });
+
+  it('leaves created at 0 without a converter', () => {
+    expect([...parseProcessTable('10 9 123\n')]).toEqual([[10, { parent: 9, created: 0 }]]);
+  });
+});
+
+describe('isTimedTable', () => {
+  it('trusts a table that contains this process', () => {
+    expect(isTimedTable(table([[10, 9, 300], [9, 0, 200]]), 10)).toBe(true);
+    expect(isTimedTable(table([[10, 9]]), 10)).toBe(true);
+  });
+
+  it('does not trust a table without this process (truncated output)', () => {
+    expect(isTimedTable(table([[9, 0, 200], [8, 0, 100]]), 10)).toBe(false);
+    expect(isTimedTable(table([]), 10)).toBe(false);
+  });
+});
+
+describe('filetimeToMs', () => {
+  it('converts a Windows FILETIME to epoch milliseconds', () => {
+    // 2026-11-13T00:00:00Z
+    expect(filetimeToMs(134390016000000000)).toBe(1794528000000);
+  });
+
+  it('keeps 0 (unknown) as 0', () => {
+    expect(filetimeToMs(0)).toBe(0);
   });
 });
 
@@ -56,14 +92,37 @@ describe('ancestorsOf', () => {
 
 describe('readProcessTable (real system)', () => {
   it('knows this process and its parent', async () => {
-    const processes = await readProcessTable();
+    const { table: processes } = await readProcessTable();
     expect(processes.get(process.pid)?.parent).toBe(process.ppid);
+  }, 30_000);
+
+  it('reports when the snapshot was taken', async () => {
+    const before = Date.now();
+    const snapshot: ProcessSnapshot = await readProcessTable();
+    expect(snapshot.takenAt).toBeGreaterThanOrEqual(before);
+    expect(snapshot.takenAt).toBeLessThanOrEqual(Date.now());
+  }, 30_000);
+
+  it('says whether the snapshot carries creation times (Windows only)', async () => {
+    const snapshot = await readProcessTable();
+    expect(snapshot.timed).toBe(process.platform === 'win32');
+  }, 30_000);
+
+  it.runIf(process.platform === 'win32')('gives this process an epoch-ms creation time matching the wall clock at its start', async () => {
+    const { table: processes } = await readProcessTable();
+    const created = processes.get(process.pid)!.created;
+    const origin = Math.round(performance.timeOrigin);
+    // The property isStale relies on: the OS never reports this process as created later than the wall clock
+    // at its start (a little slack for rounding) ...
+    expect(created).toBeLessThanOrEqual(origin + 1000);
+    // ... and, loosely, not absurdly earlier either.
+    expect(created).toBeGreaterThan(origin - 60_000);
   }, 30_000);
 
   // `ps` is started by absolute path (/bin/ps or /usr/bin/ps) from `/`, so a planted `ps` in the session's
   // folder cannot run; not reachable on Windows, which uses the PowerShell branch.
   it.runIf(process.platform !== 'win32')('reads the process table with ps and knows this process and its parent', async () => {
-    const processes = await readProcessTable();
+    const { table: processes } = await readProcessTable();
     expect(processes.get(process.pid)?.parent).toBe(process.ppid);
     expect(processes.has(process.ppid)).toBe(true);
   }, 30_000);
@@ -78,7 +137,7 @@ describe('readProcessTable (real system)', () => {
     try {
       process.chdir(planted);
       delete process.env.NoDefaultCurrentDirectoryInExePath;
-      const processes = await readProcessTable();
+      const { table: processes } = await readProcessTable();
       expect(processes.get(process.pid)?.parent).toBe(process.ppid);
     } finally {
       process.chdir(cwd);
@@ -111,14 +170,14 @@ describe('readProcessTable (real system)', () => {
   it.runIf(process.platform === 'win32')('falls back to C:\\Windows when SystemRoot is empty or unset', async () => {
     for (const value of ['', undefined]) {
       await withSystemRoot(value, async () => {
-        const processes = await readProcessTable();
+        const { table: processes } = await readProcessTable();
         expect(processes.get(process.pid)?.parent).toBe(process.ppid);
       });
     }
   }, 30_000);
 
   it.runIf(process.platform === 'win32')('knows when each process was created', async () => {
-    const processes = await readProcessTable();
+    const { table: processes } = await readProcessTable();
     const self = processes.get(process.pid);
     const parent = processes.get(process.ppid);
     expect(self?.created).toBeGreaterThan(0);

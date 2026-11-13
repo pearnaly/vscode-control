@@ -3,6 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { handleTool, NO_WINDOW, type HandleDeps } from '../../bridge/src/handle';
+import type { ProcessSnapshot } from '../../bridge/src/processTree';
 import type { CallRequest, WindowRecord } from '../../shared/protocol';
 
 const file = path.resolve(os.tmpdir(), 'a.ts');
@@ -10,16 +11,30 @@ const win = (pid: number, workspaceFolders: string[] = []): WindowRecord => ({
   pid, port: 1000 + pid, token: 't'.repeat(64), workspaceFolders, windowName: `w${pid}`, lastFocusedAt: 0,
 });
 
-type TestDeps = HandleDeps & { calls: Array<{ pid: number; req: CallRequest }>; forgotten: number[] };
+/** A snapshot whose chain is chain[0] → chain[1] → …; creation times unknown (0) unless given. */
+const chainSnapshot = (chain: number[], created: Record<number, number> = {}): ProcessSnapshot => ({
+  table: new Map(chain.map((pid, i) => [pid, { parent: chain[i + 1] ?? 0, created: created[pid] ?? 0 }])),
+  takenAt: Date.now(),
+  timed: true,
+});
+
+type TestDeps = HandleDeps & {
+  calls: Array<{ pid: number; req: CallRequest }>;
+  forgotten: number[];
+  logged: string[];
+};
 
 function makeDeps(over: Partial<HandleDeps> = {}): TestDeps {
   const calls: Array<{ pid: number; req: CallRequest }> = [];
   const forgotten: number[] = [];
+  const logged: string[] = [];
   return {
     calls,
     forgotten,
+    logged,
     readWindows: async () => [win(7)],
-    ancestors: async () => [99, 7],
+    snapshot: async () => chainSnapshot([99, 7]),
+    selfPid: 99,
     cwd: os.tmpdir(),
     callWindow: async (w, req) => {
       calls.push({ pid: w.pid, req });
@@ -27,6 +42,9 @@ function makeDeps(over: Partial<HandleDeps> = {}): TestDeps {
     },
     forgetWindow: async (w) => {
       forgotten.push(w.pid);
+    },
+    log: (line) => {
+      logged.push(line);
     },
     ...over,
   };
@@ -46,14 +64,14 @@ describe('handleTool', () => {
   });
 
   it('notes a window chosen by folder match', async () => {
-    const deps = makeDeps({ ancestors: async () => [], readWindows: async () => [win(7, [os.tmpdir()])] });
+    const deps = makeDeps({ snapshot: async () => chainSnapshot([99]), readWindows: async () => [win(7, [os.tmpdir()])] });
     expect(text(await handleTool('open_file', { path: file }, deps))).toBe(
       'Opened a.ts (window: w7) [window chosen by folder match]',
     );
   });
 
   it('notes a window chosen by last focus', async () => {
-    const deps = makeDeps({ ancestors: async () => [] });
+    const deps = makeDeps({ snapshot: async () => chainSnapshot([99]) });
     expect(text(await handleTool('open_file', { path: file }, deps))).toBe(
       'Opened a.ts (window: w7) [window chosen by last focus]',
     );
@@ -94,7 +112,7 @@ describe('handleTool', () => {
   it('forgets a window that refuses connections and retries with the next one', async () => {
     const deps = makeDeps({
       readWindows: async () => [win(7), win(8)],
-      ancestors: async () => [],
+      snapshot: async () => chainSnapshot([99]),
       callWindow: async (w) => (w.pid === 7 ? refused : { ok: true, text: `Opened a.ts (window: w${w.pid})` }),
     });
     const r = await handleTool('open_file', { path: file }, deps);
@@ -104,7 +122,7 @@ describe('handleTool', () => {
   });
 
   it('says no window is running when the only window picked by fallback refuses connections', async () => {
-    const deps = makeDeps({ ancestors: async () => [], callWindow: async () => refused });
+    const deps = makeDeps({ snapshot: async () => chainSnapshot([99]), callWindow: async () => refused });
     const r = await handleTool('open_file', { path: file }, deps);
     expect(r.isError).toBe(true);
     expect(text(r)).toBe(`${NO_WINDOW} (window "w7" refused the connection and was forgotten)`);
@@ -143,7 +161,7 @@ describe('handleTool', () => {
     let calls = 0;
     const deps = makeDeps({
       readWindows: async () => [win(7), win(8)],
-      ancestors: async () => [],
+      snapshot: async () => chainSnapshot([99]),
       callWindow: async () => {
         calls += 1;
         return { ok: false, error };
@@ -160,7 +178,7 @@ describe('handleTool', () => {
     let calls = 0;
     const deps = makeDeps({
       readWindows: async () => [win(7), win(8), win(9)],
-      ancestors: async () => [],
+      snapshot: async () => chainSnapshot([99]),
       callWindow: async () => {
         calls += 1;
         return refused;
@@ -170,5 +188,160 @@ describe('handleTool', () => {
     expect(r.isError).toBe(true);
     expect(calls).toBe(2);
     expect(deps.forgotten).toEqual([7]);
+  });
+
+  it('forgets a stale record before choosing a window, even one the ancestry would match', async () => {
+    const stale: WindowRecord = { ...win(7), startedAt: 1_000 }; // pid 7 now belongs to a process started at 5 000 000
+    const deps = makeDeps({
+      readWindows: async () => [stale, win(8)],
+      snapshot: async () => chainSnapshot([99, 7], { 7: 5_000_000 }),
+    });
+    const r = await handleTool('open_file', { path: file }, deps);
+    expect(deps.forgotten).toEqual([7]);
+    expect(deps.logged).toEqual([
+      'vscode-control: ignored stale discovery file 7.json (its pid now belongs to a newer process)',
+    ]);
+    expect(deps.calls.map((c) => c.pid)).toEqual([8]);
+    expect(text(r)).toBe('Opened a.ts (window: w8) [window chosen by last focus]');
+  });
+
+  it('keeps a record whose start time matches its process', async () => {
+    const live: WindowRecord = { ...win(7), startedAt: 5_002_000 };
+    const deps = makeDeps({
+      readWindows: async () => [live],
+      snapshot: async () => chainSnapshot([99, 7], { 7: 5_000_000 }),
+    });
+    expect(text(await handleTool('open_file', { path: file }, deps))).toBe('Opened a.ts (window: w7)');
+    expect(deps.forgotten).toEqual([]);
+  });
+
+  it('says no window is running when the only record is stale', async () => {
+    const deps = makeDeps({
+      readWindows: async () => [{ ...win(7), startedAt: 1_000 }],
+      snapshot: async () => chainSnapshot([99, 7], { 7: 5_000_000 }),
+    });
+    const r = await handleTool('open_file', { path: file }, deps);
+    expect(r.isError).toBe(true);
+    expect(text(r)).toBe(NO_WINDOW);
+    expect(deps.forgotten).toEqual([7]);
+  });
+
+  it('skips the stale check and the ancestry when the process snapshot cannot be read', async () => {
+    const deps = makeDeps({
+      readWindows: async () => [{ ...win(7), startedAt: 1_000 }],
+      snapshot: async () => {
+        throw new Error('powershell missing');
+      },
+    });
+    expect(text(await handleTool('open_file', { path: file }, deps))).toBe(
+      'Opened a.ts (window: w7) [window chosen by last focus]',
+    );
+    expect(deps.forgotten).toEqual([]);
+    expect(deps.logged).toEqual([]);
+  });
+
+  it('answers "no window" without reading the process snapshot when there are no discovery files', async () => {
+    let snapshotCalls = 0;
+    const deps = makeDeps({
+      readWindows: async () => [],
+      snapshot: async () => {
+        snapshotCalls += 1;
+        return chainSnapshot([99]);
+      },
+    });
+    const r = await handleTool('open_file', { path: file }, deps);
+    expect(r.isError).toBe(true);
+    expect(text(r)).toBe(NO_WINDOW);
+    expect(snapshotCalls).toBe(0);
+    expect(deps.logged).toEqual([]);
+  });
+
+  it('ignores, but does not delete, a record whose pid was not running when the session started', async () => {
+    const deps = makeDeps({
+      readWindows: async () => [{ ...win(7), startedAt: 1_000 }], // claims to run since 1 000; pid 7 is not in the table
+      snapshot: async () => chainSnapshot([99]),
+    });
+    const r = await handleTool('open_file', { path: file }, deps);
+    expect(r.isError).toBe(true);
+    expect(text(r)).toBe(NO_WINDOW);
+    expect(deps.forgotten).toEqual([]);
+    expect(deps.calls).toEqual([]);
+    expect(deps.logged).toEqual([
+      'vscode-control: ignored discovery file 7.json (its process was not running when this session started; not deleted)',
+    ]);
+  });
+
+  it('uses the remaining windows when a record is ignored as gone', async () => {
+    const deps = makeDeps({
+      readWindows: async () => [{ ...win(7), startedAt: 1_000 }, win(8)],
+      snapshot: async () => chainSnapshot([99]),
+    });
+    expect(text(await handleTool('open_file', { path: file }, deps))).toBe(
+      'Opened a.ts (window: w8) [window chosen by last focus]',
+    );
+    expect(deps.forgotten).toEqual([]);
+    expect(deps.calls.map((c) => c.pid)).toEqual([8]);
+  });
+
+  it('forgets a reused record and still forgets-and-retries a refusing fallback window afterwards', async () => {
+    const called: number[] = [];
+    const deps = makeDeps({
+      // 7: reused pid that the ancestry would have matched; 8: refuses (most recent focus); 9: live.
+      readWindows: async () => [
+        { ...win(7), startedAt: 1_000, lastFocusedAt: 1 },
+        { ...win(8), lastFocusedAt: 30 },
+        { ...win(9), lastFocusedAt: 20 },
+      ],
+      snapshot: async () => chainSnapshot([99, 7], { 7: 5_000_000 }),
+      callWindow: async (w) => {
+        called.push(w.pid);
+        return w.pid === 8 ? refused : { ok: true, text: `Opened a.ts (window: w${w.pid})` };
+      },
+    });
+    const r = await handleTool('open_file', { path: file }, deps);
+    expect(r.isError).toBeFalsy();
+    expect(text(r)).toBe('Opened a.ts (window: w9) [window chosen by last focus]');
+    expect(deps.forgotten).toEqual([7, 8]);
+    expect(called).toEqual([8, 9]);
+  });
+
+  it('keeps a record with an old startedAt, and process-matches it, on a snapshot without creation times', async () => {
+    const deps = makeDeps({
+      readWindows: async () => [{ ...win(7), startedAt: 1_000 }],
+      snapshot: async () => ({ ...chainSnapshot([99, 7], { 7: 5_000_000 }), timed: false }),
+    });
+    expect(text(await handleTool('open_file', { path: file }, deps))).toBe('Opened a.ts (window: w7)');
+    expect(deps.forgotten).toEqual([]);
+    expect(deps.logged).toEqual([]);
+  });
+
+  it('still answers when forgetting a reused record fails', async () => {
+    const deps = makeDeps({
+      readWindows: async () => [{ ...win(7), startedAt: 1_000 }, win(8)],
+      snapshot: async () => chainSnapshot([99, 7], { 7: 5_000_000 }),
+      forgetWindow: async () => {
+        throw new Error('EPERM: operation not permitted');
+      },
+    });
+    const r = await handleTool('open_file', { path: file }, deps);
+    expect(r.isError).toBeFalsy();
+    expect(text(r)).toBe('Opened a.ts (window: w8) [window chosen by last focus]');
+    expect(deps.logged).toEqual([
+      'vscode-control: ignored stale discovery file 7.json (its pid now belongs to a newer process)',
+    ]);
+  });
+
+  it('still retries with the next window when forgetting a refusing window fails', async () => {
+    const deps = makeDeps({
+      readWindows: async () => [{ ...win(7), lastFocusedAt: 20 }, { ...win(8), lastFocusedAt: 10 }],
+      snapshot: async () => chainSnapshot([99]),
+      callWindow: async (w) => (w.pid === 7 ? refused : { ok: true, text: `Opened a.ts (window: w${w.pid})` }),
+      forgetWindow: async () => {
+        throw new Error('EPERM: operation not permitted');
+      },
+    });
+    const r = await handleTool('open_file', { path: file }, deps);
+    expect(r.isError).toBeFalsy();
+    expect(text(r)).toBe('Opened a.ts (window: w8) [window chosen by last focus]');
   });
 });

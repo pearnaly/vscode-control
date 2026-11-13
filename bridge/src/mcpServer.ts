@@ -5,7 +5,7 @@ import { handleTool, type HandleDeps } from './handle';
 
 /** The MCP server with both tools. Strict input schemas: unknown keys are rejected, not dropped. */
 export function buildServer(deps: HandleDeps): McpServer {
-  const server = new McpServer({ name: 'vscode-control', version: '0.1.1' }, { instructions: SERVER_INSTRUCTIONS });
+  const server = new McpServer({ name: 'vscode-control', version: '0.2.0' }, { instructions: SERVER_INSTRUCTIONS });
   server.registerTool(
     'open_file',
     { title: 'Open file in VS Code', description: OPEN_FILE_DESCRIPTION, inputSchema: openFileObject },

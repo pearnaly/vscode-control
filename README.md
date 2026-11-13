@@ -25,7 +25,8 @@ Developed and tested on Windows 11. Linux works: it was run through Remote-SSH, 
 macOS is untested and should work the same way as Linux. On Linux and macOS the bridge reads the process table with
 `ps` instead of PowerShell. It starts `ps` by absolute path (`/bin/ps` or `/usr/bin/ps`), from `/` as the working
 directory, and fails if neither exists. `ps` reports no creation times, so the creation-time check in the ancestor
-walk (see Security) does not apply there.
+walk (see Security) does not apply there, and neither does the start-time check for stale discovery files (also
+see Security): both run on Windows only.
 
 "Beside the chat" finds the chat through the Claude Code chat tab's internal view type, `claudeVSCodePanel`. That
 name is not a public interface and may change; if it does, `open_file` falls back to VS Code's own "beside".
@@ -38,7 +39,8 @@ Claude Code ──stdio MCP──▶ bridge (one per session) ──HTTP + beare
 
 - The **extension** (`extension/`) starts in every VS Code window, listens on `127.0.0.1:<random port>` with a
   random 32-byte token, and writes `~/.vscode-control/windows/<extension-host-pid>.json` (on Windows
-  `%USERPROFILE%\.vscode-control\windows\`) with the port, token, workspace folders, window name and last focus.
+  `%USERPROFILE%\.vscode-control\windows\`) with the port, token, workspace folders, window name, last focus and
+  the extension host's start time (`startedAt`, used by the stale-file check on Windows, see Security).
   The file is removed when the window closes.
 - The **bridge** (`bridge/`) is a stdio MCP server that Claude Code starts per session. It picks the window whose
   extension host is an ancestor of the bridge process (that is the window running the Claude session), else the
@@ -149,10 +151,16 @@ encode a usage policy:
 - **Ancestry needs name = pid.** A discovery file counts only if its name is exactly `<pid>.json` for the pid it
   contains, so a file cannot claim a window's pid under another name. The ancestor walk also stops at a parent that
   is gone or was created after its child, because Windows can reuse the pid of a dead parent.
-- **Accepted risk: a stale discovery file.** After a crash the window's file stays behind. If another process reuses
-  that pid, the file still looks alive, and a call that reaches the window by fallback may send its request, with the
-  stale token, to whatever now listens on that port on `127.0.0.1`. A refused connection makes the bridge delete the
-  file and retry once with the next window.
+- **Stale discovery files.** After a crash a window's file stays behind, and its pid may be reused. Files of dead
+  pids are deleted whenever a bridge reads the folder. On Windows, which reuses pids much sooner than Linux, the
+  extension also records when its process started (`startedAt`, since 0.2.0) and the bridge compares it with the
+  creation time in the OS process table. A file whose pid now belongs to a process started after that window is
+  deleted and never contacted (when the bridge could read the process table). A file whose process was not
+  running when the session started is ignored for the session but not deleted, because that verdict rests on the
+  window's own clock. Linux and macOS hand out pids sequentially, so reuse needs a wrap-around; there, and for
+  files written by 0.1.x, a refused connection still makes the bridge forget the file and retry once with the next
+  window. Not covered: a window that crashes after the bridge read the process table (once per session) and whose
+  pid is reused within that session.
 
 ## Troubleshooting
 
@@ -168,6 +176,12 @@ encode a usage policy:
   file left behind) is forgotten automatically and the call is retried once with the next window. The session's
   own window is never forgotten or replaced: if it refuses, the error says so; reload it (which also restarts the
   Claude session running in it).
+- A window is missing, or a discovery file has disappeared: the bridge writes one line to its stderr (which
+  Claude Code keeps in its MCP server logs) when it skips a file. `vscode-control: ignored stale discovery file <pid>.json
+  (its pid now belongs to a newer process)` means the window had crashed and its pid was reused; the file was
+  deleted. `vscode-control: ignored discovery file <pid>.json (its process was not running when this session
+  started; not deleted)` means the file was only left out of that session's calls; if the window is alive, reload
+  it so it writes a fresh file, or start a new Claude session.
 
 ## Uninstall
 
