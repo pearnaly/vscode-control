@@ -16,7 +16,7 @@ afterEach(() => {
 });
 
 const record = (over: Partial<WindowRecord> = {}): WindowRecord => ({
-  pid: 4242, port: 50000, token: 't'.repeat(64), workspaceFolders: ['C:\\proj'], windowName: 'proj', lastFocusedAt: 1,
+  pid: 4242, port: 50000, token: 't'.repeat(64), workspaceFolders: [path.resolve(os.tmpdir(), 'proj')], windowName: 'proj', lastFocusedAt: 1,
   ...over,
 });
 

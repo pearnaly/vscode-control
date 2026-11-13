@@ -11,7 +11,9 @@ Both are built from this repository.
 
 ## Requirements
 
-- VS Code 1.95 or newer, with local windows only (no Remote, WSL or dev-container windows).
+- VS Code 1.95 or newer. Local windows and Remote-SSH windows work; WSL and dev-container windows are untested. In a
+  Remote-SSH window the extension and Claude Code both run on the remote host, so install the extension there; the
+  bridge, the `claude mcp add` registration and Node.js live on the remote host too.
 - Node.js 22.12 or newer: it runs the bridge and builds the project.
 - Claude Code, with its VS Code extension. "Beside the chat" means beside that extension's chat tab; when the chat
   is not an editor tab, VS Code's own "beside" is used.
@@ -19,10 +21,11 @@ Both are built from this repository.
 
 ## Platform status
 
-Developed and tested on Windows 11. macOS and Linux should work (there the bridge reads the process table with `ps`
-instead of PowerShell) but have not been tested. The bridge starts `ps` by absolute path (`/bin/ps` or `/usr/bin/ps`),
-from `/` as the working directory, and fails if neither exists. `ps` reports no creation times, so the creation-time
-check in the ancestor walk (see Security) does not apply there.
+Developed and tested on Windows 11. Linux works: it was run through Remote-SSH, and the test suite passes there.
+macOS is untested and should work the same way as Linux. On Linux and macOS the bridge reads the process table with
+`ps` instead of PowerShell. It starts `ps` by absolute path (`/bin/ps` or `/usr/bin/ps`), from `/` as the working
+directory, and fails if neither exists. `ps` reports no creation times, so the creation-time check in the ancestor
+walk (see Security) does not apply there.
 
 "Beside the chat" finds the chat through the Claude Code chat tab's internal view type, `claudeVSCodePanel`. That
 name is not a public interface and may change; if it does, `open_file` falls back to VS Code's own "beside".
@@ -46,10 +49,14 @@ Claude Code ──stdio MCP──▶ bridge (one per session) ──HTTP + beare
 - Register the bridge as a plain stdio server, not behind a shared MCP gateway: it identifies the window through its
   own process ancestry, so a bridge that is not a descendant of the Claude session can only use the folder and focus
   fallbacks.
+- In a **Remote-SSH** window the extension runs in the remote extension host (it declares
+  `"extensionKind": ["workspace"]`), the same host where Claude Code starts its sessions, so the ancestry match works
+  there too. The discovery files are then in the remote host's home directory.
 
 ## Install / update
 
-Build, package and install the extension from source:
+Build, package and install the extension from source. With Remote-SSH, do all of this on the remote host (see
+Requirements).
 
 ```powershell
 npm install
@@ -180,7 +187,7 @@ encode a usage policy:
 - Secrets: VS Code's Local History (on Windows `%APPDATA%\Code\User\History`, elsewhere the equivalent folder in
   VS Code's user data) keeps a copy of a saved secret file. Delete that entry too, or exclude the secret folder with
   `workbench.localHistory.exclude`.
-- Remote, WSL and dev-container windows are not supported.
+- WSL and dev-container windows are untested (Remote-SSH works, see Requirements).
 
 ## Development
 
