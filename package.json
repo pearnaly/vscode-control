@@ -1,0 +1,40 @@
+{
+  "name": "vscode-control",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lets Claude Code open files and reveal them in the Explorer of the VS Code window it runs in",
+  "author": "Paul-Émile Arnaly <pearnaly@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pearnaly/vscode-control.git"
+  },
+  "homepage": "https://github.com/pearnaly/vscode-control#readme",
+  "bugs": {
+    "url": "https://github.com/pearnaly/vscode-control/issues"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "package": "npm run build && node -e \"require('node:fs').copyFileSync('LICENSE','extension/LICENSE')\" && cd extension && vsce package --no-dependencies -o ../vscode-control.vsix",
+    "install-extension": "code --install-extension vscode-control.vsix --force",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.12.0",
+    "@types/vscode": "~1.95.0",
+    "@vscode/vsce": "^3.6.2",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.3",
+    "vitest": "^5.1.0"
+  }
+}

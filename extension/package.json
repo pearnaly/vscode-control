@@ -1,0 +1,19 @@
+{
+  "name": "vscode-control",
+  "displayName": "vscode-control",
+  "description": "Lets Claude Code open files and reveal them in the Explorer of this window, through a local MCP bridge.",
+  "version": "0.1.0",
+  "publisher": "pearnaly",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pearnaly/vscode-control.git"
+  },
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "extensionKind": ["workspace"],
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./dist/extension.js"
+}
